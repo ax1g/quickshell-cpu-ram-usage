@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "agx.cpu-ram",
+  "name": "CPU & RAM",
+  "version": "1.1.0",
+  "author": "agx",
+  "description": "CPU and memory usage in the bar with a live details popup",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "CPU & RAM",
+    "description": "CPU and memory usage in the bar with a live details popup",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
