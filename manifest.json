@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "agx.cpu-ram",
   "name": "CPU & RAM",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "agx",
   "description": "CPU and memory usage in the bar with a live details popup",
   "kinds": [
@@ -16,6 +16,22 @@
     "description": "CPU and memory usage in the bar with a live details popup",
     "category": "System",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "interval": 5,
+      "exec": ""
+    },
+    "schema": [
+      {
+        "key": "interval",
+        "type": "number",
+        "label": "Refresh interval (seconds)"
+      },
+      {
+        "key": "exec",
+        "type": "string",
+        "label": "Poll command (leave empty for the bundled script)"
+      }
+    ]
   }
 }

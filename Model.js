@@ -17,6 +17,7 @@ function fmtMemory(kb) {
     return g.replace(/\.0$/, "") + " GB"
   }
   if (kb >= 1024) return Math.round(kb / 1024) + " MB"
+  if (kb <= 0) return "0 B"
   return Math.max(1, Math.round(kb)) + " KB"
 }
 
@@ -55,25 +56,30 @@ function loadLabel(stats) {
   return parts.join(" \u00b7 ")
 }
 
-// Top memory consumers for the panel: [{ name, label, pct }], most-first.
-// Bars are scaled to the largest process in the list so they read against
-// each other rather than against total RAM.
+// Top memory consumers for the panel: [{ name, label }], most-first, where
+// label is the app's total RSS formatted for display.
 function topApps(stats) {
   var list = stats && stats.topapps ? stats.topapps : []
-  var max = 0
-  for (var i = 0; i < list.length; i++) {
-    max = Math.max(max, Number(list[i].rss_kb) || 0)
-  }
   var out = []
   for (var j = 0; j < list.length; j++) {
     var rss = Number(list[j].rss_kb) || 0
     out.push({
       name: String(list[j].name || "\u2014"),
-      label: fmtMemory(rss),
-      pct: max > 0 ? Math.round(100 * rss / max) : 0
+      label: fmtMemory(rss)
     })
   }
   return out
+}
+
+// Total memory of the top apps shown in the panel, formatted.
+function topAppsTotal(stats) {
+  var list = stats && stats.topapps ? stats.topapps : []
+  if (list.length === 0) return ""
+  var total = 0
+  for (var i = 0; i < list.length; i++) {
+    total += Number(list[i].rss_kb) || 0
+  }
+  return fmtMemory(total)
 }
 
 // Number field from a payload section, e.g. value(stats, "ram", "used_kb", 0).

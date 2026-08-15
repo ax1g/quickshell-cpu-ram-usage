@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -29,6 +28,7 @@ Panel {
   readonly property int ramPercent: Model.pctFor(root.stats, "ram")
   readonly property bool hasSwap: Model.value(root.stats, "swap", "total_kb", 0) > 0
   readonly property var topApps: Model.topApps(root.stats)
+  readonly property string topAppsTotalLabel: Model.topAppsTotal(root.stats)
   readonly property string loadLabel: Model.loadLabel(root.stats)
   readonly property string tempLabel: Model.cpuTemp(root.stats)
 
@@ -63,6 +63,14 @@ Panel {
       root.hostWidget.refresh()
   }
 
+  // b-key shortcut: drop the panel and open btop in a floating terminal,
+  // matching how the network panel summons its tools.
+  function openBtop() {
+    root.close()
+    if (root.bar && typeof root.bar.run === "function")
+      root.bar.run("omarchy-launch-floating-terminal-with-presentation btop")
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -84,6 +92,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "g") panelScroll.contentY = 0
         else if (t === "G") panelScroll.contentY = Math.max(0, panelScroll.contentHeight - panelScroll.height)
+        else if (t === "b" || t === "B") root.openBtop()
       }
 
       Flickable {
@@ -180,80 +189,63 @@ Panel {
 
             SectionHeader {
               label: "TOP MEMORY"
-              value: ""
+              value: root.topAppsTotalLabel
             }
 
             Column {
               width: parent.width
-              spacing: Style.space(10)
+              spacing: Style.spacing.labelGap
 
               Repeater {
                 model: root.topApps
 
+                // Two-column rows, same look as the network panel's info grid:
+                // dimmed label on the left, right-aligned value on the right,
+                // bodySmall text, labelGap row spacing, Space(20) column gap.
                 Item {
                   required property var modelData
 
                   readonly property string appName: String(modelData.name || "")
                   readonly property string memLabel: String(modelData.label || "")
-                  readonly property int pct: modelData.pct
-                  readonly property int barHeight: Style.space(5)
-                  readonly property int barGap: Style.space(5)
 
                   width: parent.width
-                  implicitHeight: appRow.implicitHeight + barGap + barHeight
+                  implicitHeight: Math.max(appNameText.implicitHeight, appMemText.implicitHeight)
 
-                  Row {
-                    id: appRow
+                  InfoLabel {
+                    id: appNameText
+                    text: appName
+                    elide: Text.ElideRight
                     anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    spacing: Style.space(8)
-
-                    Text {
-                      id: nameLabel
-                      text: appName
-                      color: root.contentForeground
-                      font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      width: parent.width - appMem.width - parent.spacing
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Text {
-                      id: appMem
-                      text: memLabel
-                      color: root.contentForeground
-                      font.family: root.contentFontFamily
-                      font.pixelSize: Style.font.body
-                      width: Style.space(72)
-                      horizontalAlignment: Text.AlignRight
-                      elide: Text.ElideRight
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
+                    anchors.right: appMemText.left
+                    anchors.rightMargin: Style.space(20)
+                    anchors.verticalCenter: parent.verticalCenter
                   }
 
-                  Rectangle {
-                    anchors.left: parent.left
+                  InfoValue {
+                    id: appMemText
+                    text: memLabel
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
                     anchors.right: parent.right
-                    anchors.top: appRow.bottom
-                    anchors.topMargin: barGap
-                    height: barHeight
-                    radius: Style.cornerRadius > 0 ? height / 2 : 0
-                    color: Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.12)
-
-                    Rectangle {
-                      width: Math.round(parent.width * (pct / 100))
-                      height: parent.height
-                      radius: parent.radius
-                      color: Style.selectedStateColor(root.contentForeground, Color.accent)
-
-                      Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                    }
+                    anchors.verticalCenter: parent.verticalCenter
                   }
                 }
               }
             }
+          }
+
+          // Keyboard hint, styled like the section header values (dim caption)
+          // so it reads as a footer rather than a data row.
+          Text {
+            width: parent.width
+            text: "b \u00b7 open btop"
+            color: Qt.darker(root.contentForeground, 1.5)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1.2
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
           }
 
           Item {
@@ -306,7 +298,6 @@ Panel {
       font.pixelSize: Style.font.title
       font.bold: true
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
       elide: Text.ElideRight
     }
@@ -339,7 +330,6 @@ Panel {
       font.bold: true
       font.letterSpacing: 1.2
       anchors.right: parent.right
-      anchors.rightMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
       elide: Text.ElideRight
     }
@@ -401,5 +391,20 @@ Panel {
         Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
       }
     }
+  }
+
+  // Two-column info rows, mirroring the network panel's label/value pair:
+  // dimmed small label, plain small value.
+  component InfoLabel: Text {
+    color: root.contentForeground
+    opacity: 0.6
+    font.family: root.contentFontFamily
+    font.pixelSize: Style.font.bodySmall
+  }
+
+  component InfoValue: Text {
+    color: root.contentForeground
+    font.family: root.contentFontFamily
+    font.pixelSize: Style.font.bodySmall
   }
 }

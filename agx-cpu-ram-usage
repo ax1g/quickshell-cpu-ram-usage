@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- CPU usage: delta over the previous sample -----------------------------
+state=/tmp/agx-cpu-ram-usage
+prev_total=0
+prev_idle=0
+if [[ -f "$state" ]]; then
+  read -r prev_total prev_idle < "$state"
+fi
+
+read -r _ user nice system idle iowait irq softirq steal _ _ _ < /proc/stat
+total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+
+if (( prev_total > 0 && total > prev_total )); then
+  d_total=$((total - prev_total))
+  d_idle=$(( (idle + iowait) - prev_idle ))
+  usage=$(( (100 * (d_total - d_idle)) / d_total ))
+else
+  usage=0
+fi
+
+printf '%s %s\n' "$total" "$((idle + iowait))" > "$state"
+
+read -r load1 load5 load15 _ < /proc/loadavg
+
+# --- RAM / swap ------------------------------------------------------------
+total_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+used_kb=$((total_kb - avail_kb))
+percent=$((used_kb * 100 / total_kb))
+
+swap_total_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+swap_free_kb=$(awk '/SwapFree/ {print $2}' /proc/meminfo)
+swap_used_kb=$((swap_total_kb - swap_free_kb))
+if (( swap_used_kb < 0 )); then swap_used_kb=0; fi
+
+export AGX_CPU_PERCENT=$usage
+export AGX_LOAD1=$load1 AGX_LOAD5=$load5 AGX_LOAD15=$load15
+export AGX_RAM_USED_KB=$used_kb AGX_RAM_AVAIL_KB=$avail_kb AGX_RAM_TOTAL_KB=$total_kb
+export AGX_SWAP_USED_KB=$swap_used_kb AGX_SWAP_TOTAL_KB=$swap_total_kb
+
+# --- JSON assembly: temperature, top apps, and escaping live in python -----
+python3 <<'PY'
+import json, os, subprocess
+
+def kb(name):
+    try:
+        return max(0, int(float(os.environ.get(name, 0))))
+    except ValueError:
+        return 0
+
+def gb(kib):
+    return round(kib / 1024.0 / 1024.0, 1)
+
+def fmt(kib):
+    if kib >= 1024 * 1024:
+        return f"{gb(kib):.1f}GB"
+    if kib >= 1024:
+        return f"{round(kib / 1024)}MB"
+    return f"{kib}KB"
+
+def read_temp():
+    best_score = -1
+    best = 0.0
+    score_for = {"tctl": 3, "package id 0": 3, "cpu": 3, "composite": 2, "edge": 1}
+    try:
+        hwmons = sorted(os.listdir("/sys/class/hwmon"))
+    except OSError:
+        hwmons = []
+    for name in hwmons:
+        path = os.path.join("/sys/class/hwmon", name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            files = os.listdir(path)
+        except OSError:
+            continue
+        for f in files:
+            if not f.startswith("temp") or not f.endswith("_label"):
+                continue
+            try:
+                label = open(os.path.join(path, f)).read().strip().lower()
+            except OSError:
+                continue
+            score = score_for.get(label, 0)
+            if score <= 0:
+                continue
+            try:
+                value = int(open(os.path.join(path, f[:-6] + "input")).read()) / 1000.0
+            except (OSError, ValueError):
+                continue
+            if score > best_score or (score == best_score and value > best):
+                best_score, best = score, value
+    if best_score < 0:
+        try:
+            out = subprocess.run(["sensors", "-j"], capture_output=True, text=True, timeout=2)
+            data = json.loads(out.stdout)
+            for chip, vals in data.items():
+                for key, val in vals.items():
+                    if not isinstance(val, dict):
+                        continue
+                    if key.lower() in score_for:
+                        for k, v in val.items():
+                            if k.endswith("_input") and isinstance(v, (int, float)):
+                                best = max(best, float(v))
+        except Exception:
+            pass
+    return round(best, 1)
+
+# comm names of internal browser worker processes. These must never appear
+# as their own top-memory entry; their RSS is folded into the browser's
+# main process. Includes the kernel's 15-char comm truncations seen on this
+# machine ("Privileged Cont", "Isolated Web Co") plus common worker names
+# from the firefox- and chromium-families.
+BROWSER_SUBPROCESS_COMMS = {
+    "Web Content", "WebExtensions", "forkserver",
+    "Socket Process", "Socket", "RDD Process",
+    "Privileged Cont", "Privileged Content Process",
+    "Utility Process", "Utility", "utility",
+    "Isolated Web Co", "Isolated Web Content", "Isolated Servic",
+    "Isolated Web App", "Isolated App Process",
+    "GPU Process", "gpu-process", "GPU", "renderer", "Renderer", "zygote",
+    "Crashpad Handler", "Chrome_ChildThread", "spellcheck", "tab", "mime",
+}
+
+def top_apps(limit=5):
+    # Read /proc directly: ps -o comm= columns are space-padded, so the
+    # multi-word worker names ("Web Content", "Socket Process", ...) split on
+    # whitespace and each fragment masquerades as a separate app. Reading the
+    # raw stat comm (kernel-truncated to 15 chars) and stat field 24 (RSS in
+    # pages) keeps both the name and the footprint intact.
+    procs = {}
+    try:
+        pids = [int(p) for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return []
+    pagesize = os.sysconf("SC_PAGESIZE") or 4096
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                data = fh.read()
+            comm = data[data.index("(") + 1:data.index(")")]
+            rest = data[data.index(")") + 2:].split()
+            ppid = int(rest[1])
+            rss = int(rest[21]) * pagesize // 1024
+        except (ValueError, IndexError, OSError):
+            continue
+        if rss <= 0:
+            continue
+        procs[pid] = (ppid, comm, rss)
+
+    # Fold workers into their main process: walk the parent chain while the
+    # current process is an internal browser worker. The walk stops at the
+    # browser binary (e.g. "zen-bin"), so every worker's RSS lands on the
+    # same row as the browser that spawned it.
+    def root_for(pid):
+        ppid, comm, _ = procs[pid]
+        seen = set()
+        while comm in BROWSER_SUBPROCESS_COMMS and ppid in procs and ppid not in seen:
+            seen.add(ppid)
+            ppid, comm, _ = procs[ppid]
+        return comm
+
+    agg = {}
+    for pid, (ppid, comm, rss) in procs.items():
+        name = root_for(pid) if comm in BROWSER_SUBPROCESS_COMMS else comm
+        agg[name] = agg.get(name, 0) + rss
+    items = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"name": name, "rss_kb": rss} for name, rss in items]
+
+cpu_percent = max(0, min(100, kb("AGX_CPU_PERCENT")))
+ram_used, ram_avail, ram_total = kb("AGX_RAM_USED_KB"), kb("AGX_RAM_AVAIL_KB"), kb("AGX_RAM_TOTAL_KB")
+swap_used, swap_total = kb("AGX_SWAP_USED_KB"), kb("AGX_SWAP_TOTAL_KB")
+
+ram = {
+    "used_kb": ram_used,
+    "available_kb": ram_avail,
+    "total_kb": ram_total,
+    "percent": (ram_used * 100 // ram_total) if ram_total > 0 else 0,
+}
+swap = {
+    "used_kb": swap_used,
+    "total_kb": swap_total,
+    "percent": (swap_used * 100 // swap_total) if swap_total > 0 else 0,
+}
+cpu = {
+    "percent": cpu_percent,
+    "temp": read_temp(),
+    "load": [
+        float(os.environ.get("AGX_LOAD1", 0)),
+        float(os.environ.get("AGX_LOAD5", 0)),
+        float(os.environ.get("AGX_LOAD15", 0)),
+    ],
+}
+apps = top_apps()
+
+def fmt_load():
+    return " ".join(f"{x:.1f}" for x in cpu["load"])
+
+tooltip = f"CPU: {cpu_percent}%"
+if cpu["temp"] > 0:
+    tooltip += f"  \u00b7  {cpu['temp']:.1f}\u00b0C"
+tooltip += f"\nLoad: {fmt_load()}"
+tooltip += f"\n\nMemory: {ram['percent']}%\nUsed: {fmt(ram_used)} / {fmt(ram_total)}\nAvailable: {fmt(ram_avail)}"
+if swap_total > 0:
+    tooltip += f"\nSwap: {fmt(swap_used)} / {fmt(swap_total)}"
+if apps:
+    tooltip += "\n\nTop memory:"
+    for app in apps:
+        tooltip += f"\n{app['name']} {fmt(app['rss_kb'])}"
+
+payload = {
+    "text": f"󰍛 {cpu_percent}%   {gb(ram_used):.1f}GB",
+    "tooltip": tooltip,
+    "cpu": cpu,
+    "ram": ram,
+    "swap": swap,
+    "topapps": apps,
+}
+print(json.dumps(payload))
+PY
