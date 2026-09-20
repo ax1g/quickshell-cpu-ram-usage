@@ -41,19 +41,16 @@ BarWidget {
     return lines
   }
 
-  // The poll label minus the leading CPU glyph: " 16%   3.1GB". Composed
-  // back into a single rich-text label with the glyph span enlarged, so Qt
-  // keeps both on one shared baseline and the icon matches the visual weight
-  // of the other glyphs instead of rendering small at the same size.
+  // The poll label minus the leading CPU glyph: " 16%  3.1GB". Kept
+  // plain-text: WidgetButton renders with Text.PlainText, so any HTML
+  // (e.g. a <span> enlarging the glyph) would leak literally onto the bar.
+  // The glyph renders at body size, matching agx.screen-time's time mode.
   readonly property string bodyText: {
     var t = String(root.labelText || "")
     if (t.indexOf(root.cpuGlyph) === 0) t = t.slice(root.cpuGlyph.length)
     return t
   }
-  readonly property bool hasLabel: root.bodyText !== ""
-  readonly property string labelTextComposed: root.hasLabel
-    ? "<span style=\"font-size:" + Style.font.title + "px\">" + root.cpuGlyph + "</span>" + root.bodyText
-    : ""
+  readonly property bool hasLabel: String(root.labelText || "") !== ""
 
   function toggleIconOnly() {
     var next = !root.iconOnly
@@ -150,7 +147,7 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "" : (root.iconOnly ? root.cpuGlyph : root.labelTextComposed)
+    text: root.vertical ? "" : (root.iconOnly ? root.cpuGlyph : root.labelText)
     fontSize: root.vertical ? Style.font.body : (root.iconOnly ? Style.font.title : Style.font.body)
     labelVisible: !root.vertical
     hasVisualContent: root.vertical ? root.verticalLines.length > 0 : (root.hasLabel || root.iconOnly)
