@@ -56,30 +56,32 @@ function loadLabel(stats) {
   return parts.join(" \u00b7 ")
 }
 
-// Top memory consumers for the panel: [{ name, label }], most-first, where
-// label is the app's total RSS formatted for display.
-function topApps(stats) {
-  var list = stats && stats.topapps ? stats.topapps : []
+// App rows for the panel: [{ name, label, frac }], most-first, where label
+// is the app's total PSS formatted and frac is its share of system used
+// (drives the background meter fill).
+function appRows(list, used_kb) {
   var out = []
   for (var j = 0; j < list.length; j++) {
     var rss = Number(list[j].rss_kb) || 0
     out.push({
       name: String(list[j].name || "\u2014"),
-      label: fmtMemory(rss)
+      label: fmtMemory(rss),
+      frac: used_kb > 0 ? clamp(rss / used_kb, 0, 1) : 0
     })
   }
   return out
 }
 
-// Total memory of the top apps shown in the panel, formatted.
-function topAppsTotal(stats) {
+// Collapsed view: top 5 only, screen-time grouped style.
+function topApps(stats) {
   var list = stats && stats.topapps ? stats.topapps : []
-  if (list.length === 0) return ""
-  var total = 0
-  for (var i = 0; i < list.length; i++) {
-    total += Number(list[i].rss_kb) || 0
-  }
-  return fmtMemory(total)
+  return appRows(list.slice(0, 5), value(stats, "ram", "used_kb", 0))
+}
+
+// Expanded view: the entire ranked process list.
+function allApps(stats) {
+  var list = stats && stats.topapps ? stats.topapps : []
+  return appRows(list, value(stats, "ram", "used_kb", 0))
 }
 
 // One-line card subtitles, skipping fields with no data: "56°C · 2.1 · 1.3 · 1.0".
@@ -105,16 +107,34 @@ function swapSub(stats) {
     + " / " + fmtMemory(value(stats, "swap", "total_kb", 0))
 }
 
-// Remainder row so Top5 + Others == system used: { name, label } where name
-// is "Others (N processes)". Null when the payload predates the field.
+// Remainder row so Top5 + Others == system used: { name, label, frac }
+// where name is "Others (N processes)". Null when the payload predates
+// the field.
 function others(stats) {
   var o = stats && stats.others
   if (!o) return null
   var n = Math.max(0, Math.round(Number(o.count) || 0))
   var noun = n === 1 ? "process" : "processes"
+  var kb = Number(o.rss_kb) || 0
+  var used = value(stats, "ram", "used_kb", 0)
   return {
     name: "Others (" + n + " " + noun + ")",
-    label: fmtMemory(Number(o.rss_kb) || 0)
+    label: fmtMemory(kb),
+    frac: used > 0 ? clamp(kb / used, 0, 1) : 0
+  }
+}
+
+// Expanded-mode tail: with every process listed, only kernel-side usage is
+// left unattributed. Null when fully attributed or the field is missing.
+function kernelRow(stats) {
+  if (!stats || stats.unaccounted_kb === undefined) return null
+  var kb = Math.max(0, Number(stats.unaccounted_kb) || 0)
+  if (kb <= 0) return null
+  var used = value(stats, "ram", "used_kb", 0)
+  return {
+    name: "Kernel & unaccounted",
+    label: fmtMemory(kb),
+    frac: used > 0 ? clamp(kb / used, 0, 1) : 0
   }
 }
 

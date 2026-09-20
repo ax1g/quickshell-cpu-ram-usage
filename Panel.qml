@@ -26,16 +26,33 @@ Panel {
 
   readonly property int cpuPercent: Model.cpuPercent(root.stats)
   readonly property int ramPercent: Model.pctFor(root.stats, "ram")
-  readonly property var topApps: Model.topApps(root.stats)
-  readonly property var others: Model.others(root.stats)
-  // Grid cells: top 5 plus the remainder, so the grid always fills complete
-  // 2-column rows (5 + Others = 6).
-  readonly property var memCells: root.others ? root.topApps.concat([root.others]) : root.topApps
-  // Header ties to system used so Top5 + Others sums to it exactly.
+  // Collapsed shows the top 5; expanded unfolds the entire process list,
+  // screen-time legend style. Reset by toggle so the list restarts at top.
+  property bool expanded: false
+  readonly property var topRows: Model.topApps(root.stats)
+  readonly property var allRows: Model.allApps(root.stats)
+  // Collapsed tail is Others (Top5 + Others == used); expanded tail is the
+  // kernel remainder (every process already listed).
+  readonly property var tailRow: root.expanded ? Model.kernelRow(root.stats) : Model.others(root.stats)
+  readonly property var displayRows: root.tailRow ? (root.expanded ? root.allRows : root.topRows).concat([root.tailRow]) : (root.expanded ? root.allRows : root.topRows)
+  readonly property int hiddenCount: Math.max(0, root.allRows.length - root.topRows.length)
+  // Theme-aware rank palette off the theme accent; rows past the top 5
+  // share the tail color, like screen-time's Other slice.
+  readonly property var swatchColors: [
+    Color.accent,
+    Qt.darker(Color.accent, 1.25),
+    Qt.lighter(Color.accent, 1.2),
+    Qt.darker(Color.accent, 1.6),
+    Qt.lighter(Color.accent, 1.4)
+  ]
+  readonly property color tailColor: Qt.darker(root.contentForeground, 1.4)
+  // Header ties to system used so the collapsed rows sum to it exactly.
   readonly property string usedLabel: Model.fmtMemory(Model.value(root.stats, "ram", "used_kb", 0))
   readonly property string cpuSub: Model.cpuSub(root.stats)
   readonly property string ramSub: Model.ramSub(root.stats)
   readonly property string swapSub: Model.swapSub(root.stats)
+
+  onExpandedChanged: appScroll.contentY = 0
 
   function open() {
     root.refresh()
@@ -97,6 +114,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "g") panelScroll.contentY = 0
         else if (t === "G") panelScroll.contentY = Math.max(0, panelScroll.contentHeight - panelScroll.height)
+        else if (t === "m" || t === "M") root.expanded = !root.expanded
         else if (t === "b" || t === "B") root.openBtop()
       }
 
@@ -141,7 +159,7 @@ Panel {
 
           // ---- Top memory consumers -------------------------------------
           Column {
-            visible: root.memCells.length > 0
+            visible: root.displayRows.length > 0
             width: parent.width
             spacing: Style.space(8)
 
@@ -155,48 +173,88 @@ Panel {
               value: root.usedLabel
             }
 
-            // Two-column grid: top 5 plus Others fills 3 complete rows.
-            Grid {
-              id: appGrid
+            // Collapsed rows size naturally; expanded scrolls inside a fixed
+            // box with a thin edge indicator, like screen-time's legend.
+            Item {
+              id: listBox
               width: parent.width
-              columns: 2
-              rowSpacing: Style.spacing.labelGap
-              columnSpacing: Style.space(20)
+              height: root.expanded ? Math.min(appList.implicitHeight, Style.space(248)) : appList.implicitHeight
 
-              readonly property real cellWidth: (width - columnSpacing * (columns - 1)) / columns
+              Flickable {
+                id: appScroll
+                anchors.fill: parent
+                clip: true
+                contentWidth: width
+                contentHeight: appList.implicitHeight
+                interactive: contentHeight > height
+                flickableDirection: Flickable.VerticalFlick
+                boundsBehavior: Flickable.StopAtBounds
 
-              Repeater {
-                model: root.memCells
+                Column {
+                  id: appList
+                  width: parent.width
+                  spacing: Style.space(4)
 
-                // Compact two-column rows, same look as the network panel's
-                // info grid: dimmed label left, right-aligned value right.
-                Item {
-                  required property var modelData
+                  Repeater {
+                    model: root.displayRows
 
-                  readonly property string appName: String(modelData.name || "")
-                  readonly property string memLabel: String(modelData.label || "")
-
-                  width: appGrid.cellWidth
-                  implicitHeight: Math.max(cellNameText.implicitHeight, cellMemText.implicitHeight)
-
-                  InfoLabel {
-                    id: cellNameText
-                    text: appName
-                    elide: Text.ElideRight
-                    anchors.left: parent.left
-                    anchors.right: cellMemText.left
-                    anchors.rightMargin: Style.space(12)
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  InfoValue {
-                    id: cellMemText
-                    text: memLabel
-                    horizontalAlignment: Text.AlignRight
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
+                    AppRow {
+                      palette: root.swatchColors
+                      tail: root.tailColor
+                    }
                   }
                 }
+              }
+
+              // Thin scrollbar indicator on the right edge.
+              Rectangle {
+                property real ratio: appScroll.contentHeight > 0 ? appScroll.height / appScroll.contentHeight : 0
+                visible: appScroll.contentHeight > appScroll.height
+                width: 2
+                height: Math.max(Style.space(16), appScroll.height * ratio)
+                radius: width / 2
+                color: root.contentForeground
+                opacity: 0.25
+                anchors.right: appScroll.right
+                y: appScroll.y + (appScroll.height - height) * (appScroll.contentHeight > appScroll.height ? appScroll.contentY / (appScroll.contentHeight - appScroll.height) : 0)
+              }
+            }
+
+            // Show more/less footer, screen-time hero-corner style.
+            Item {
+              visible: root.hiddenCount > 0
+              width: parent.width
+              implicitHeight: Math.max(moreText.implicitHeight, moreChevron.implicitHeight)
+
+              Text {
+                id: moreText
+                text: root.expanded ? "SHOW LESS" : "SHOW MORE (" + root.hiddenCount + ")"
+                color: moreMouse.containsMouse ? root.contentForeground : Qt.darker(root.contentForeground, 1.4)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                anchors.right: moreChevron.left
+                anchors.rightMargin: Style.space(4)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: moreChevron
+                text: root.expanded ? "\u25be" : "\u25b8"
+                color: moreMouse.containsMouse ? root.contentForeground : Qt.darker(root.contentForeground, 1.4)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.title
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              MouseArea {
+                id: moreMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.expanded = !root.expanded
               }
             }
           }
@@ -205,7 +263,7 @@ Panel {
           // so it reads as a footer rather than a data row.
           Text {
             width: parent.width
-            text: "b \u00b7 open btop"
+            text: "m \u00b7 more   b \u00b7 open btop"
             color: Qt.darker(root.contentForeground, 1.5)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -267,7 +325,7 @@ Panel {
       Text {
         id: cardValue
         text: value
-        color: root.contentForeground
+        color: Color.accent
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.title
         font.bold: true
@@ -360,18 +418,70 @@ Panel {
     }
   }
 
-  // Two-column info rows, mirroring the network panel's label/value pair:
-  // dimmed small label, plain small value.
-  component InfoLabel: Text {
-    color: root.contentForeground
-    opacity: 0.6
-    font.family: root.contentFontFamily
-    font.pixelSize: Style.font.bodySmall
-  }
+  // App row: accent meter fill behind a swatch-dot row (name + value),
+  // screen-time legend style. Top ranks take the theme palette; deeper
+  // rows share the dim tail color.
+  component AppRow: Item {
+    required property var modelData
+    required property int index
+    required property var palette
+    required property color tail
 
-  component InfoValue: Text {
-    color: root.contentForeground
-    font.family: root.contentFontFamily
-    font.pixelSize: Style.font.bodySmall
+    readonly property string appName: String(modelData.name || "")
+    readonly property string memLabel: String(modelData.label || "")
+    readonly property real fillFrac: Math.max(0, Math.min(1, Number(modelData.frac) || 0))
+    readonly property color swatchColor: index < 5 ? (palette[index] || tail) : tail
+
+    width: parent.width
+    implicitHeight: Math.max(rowNameText.implicitHeight, rowMemText.implicitHeight) + Style.space(6)
+
+    Rectangle {
+      id: rowFill
+      width: Math.round(parent.width * fillFrac)
+      height: parent.height
+      radius: height / 3
+      color: Color.accent
+      opacity: 0.14
+
+      Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+    }
+
+    Rectangle {
+      id: rowSwatch
+      width: Style.space(7)
+      height: width
+      radius: width / 2
+      color: swatchColor
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      id: rowNameText
+      text: appName
+      color: root.contentForeground
+      opacity: 0.6
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.bodySmall
+      elide: Text.ElideRight
+      anchors.left: rowSwatch.right
+      anchors.leftMargin: Style.space(6)
+      anchors.right: rowMemText.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      id: rowMemText
+      text: memLabel
+      color: root.contentForeground
+      font.family: root.contentFontFamily
+      font.pixelSize: Style.font.bodySmall
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      elide: Text.ElideRight
+    }
   }
 }

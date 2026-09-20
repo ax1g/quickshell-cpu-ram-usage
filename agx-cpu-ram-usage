@@ -183,17 +183,23 @@ def top_apps(ram_used_kb, limit=5):
             entry[0] += kb
             entry[1] += 1
     ranked = sorted(agg.items(), key=lambda kv: kv[1][0], reverse=True)
+    # Full ranked list: the panel shows the top 5 collapsed and unfolds the
+    # entire list on Show More, screen-time legend style.
+    full = [{"name": name, "rss_kb": kb, "count": n} for name, (kb, n) in ranked]
     top = ranked[:limit]
     top_kb = sum(kb for _, (kb, _) in top)
     top_pids = sum(n for _, (_, n) in top)
-    # Remainder row so Top5 + Others == system used exactly: Others absorbs
-    # every other process plus kernel-side usage (slab, page tables) that no
-    # per-process counter attributes.
+    # Collapsed remainder so Top5 + Others == system used exactly: Others
+    # absorbs every other process plus kernel-side usage (slab, page tables)
+    # that no per-process counter attributes.
     others = {
         "rss_kb": max(0, ram_used_kb - top_kb),
         "count": max(0, len(procs) - top_pids),
     }
-    return ([{"name": name, "rss_kb": kb} for name, (kb, _) in top], others)
+    # Expanded-mode tail: with every process listed, only kernel-side usage
+    # is left unattributed.
+    unaccounted = max(0, ram_used_kb - sum(kb for _, (kb, _) in ranked))
+    return (full, others, unaccounted)
 
 cpu_percent = max(0, min(100, kb("AGX_CPU_PERCENT")))
 ram_used, ram_avail, ram_total = kb("AGX_RAM_USED_KB"), kb("AGX_RAM_AVAIL_KB"), kb("AGX_RAM_TOTAL_KB")
@@ -219,7 +225,7 @@ cpu = {
         float(os.environ.get("AGX_LOAD15", 0)),
     ],
 }
-apps, others = top_apps(ram_used)
+apps, others, unaccounted = top_apps(ram_used)
 
 def fmt_load():
     return " ".join(f"{x:.1f}" for x in cpu["load"])
@@ -233,7 +239,7 @@ if swap_total > 0:
     tooltip += f"\nSwap: {fmt(swap_used)} / {fmt(swap_total)}"
 if apps or others["count"] > 0:
     tooltip += "\n\nTop memory:"
-    for app in apps:
+    for app in apps[:5]:
         tooltip += f"\n{app['name']} {fmt(app['rss_kb'])}"
     noun = "process" if others["count"] == 1 else "processes"
     tooltip += f"\nOthers ({others['count']} {noun}) {fmt(others['rss_kb'])}"
@@ -246,6 +252,7 @@ payload = {
     "swap": swap,
     "topapps": apps,
     "others": others,
+    "unaccounted_kb": unaccounted,
 }
 print(json.dumps(payload))
 PY
