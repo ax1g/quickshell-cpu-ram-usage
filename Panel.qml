@@ -26,13 +26,16 @@ Panel {
 
   readonly property int cpuPercent: Model.cpuPercent(root.stats)
   readonly property int ramPercent: Model.pctFor(root.stats, "ram")
-  readonly property bool hasSwap: Model.value(root.stats, "swap", "total_kb", 0) > 0
   readonly property var topApps: Model.topApps(root.stats)
   readonly property var others: Model.others(root.stats)
+  // Grid cells: top 5 plus the remainder, so the grid always fills complete
+  // 2-column rows (5 + Others = 6).
+  readonly property var memCells: root.others ? root.topApps.concat([root.others]) : root.topApps
   // Header ties to system used so Top5 + Others sums to it exactly.
   readonly property string usedLabel: Model.fmtMemory(Model.value(root.stats, "ram", "used_kb", 0))
-  readonly property string loadLabel: Model.loadLabel(root.stats)
-  readonly property string tempLabel: Model.cpuTemp(root.stats)
+  readonly property string cpuSub: Model.cpuSub(root.stats)
+  readonly property string ramSub: Model.ramSub(root.stats)
+  readonly property string swapSub: Model.swapSub(root.stats)
 
   function open() {
     root.refresh()
@@ -80,7 +83,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentWidth: panel.fittedContentWidth(Style.space(400))
     contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
@@ -109,78 +112,36 @@ Panel {
         Column {
           id: panelColumn
           width: panelScroll.width
-          spacing: Style.space(12)
+          spacing: Style.space(8)
 
-          // ---- CPU ------------------------------------------------------
-          Column {
+          // ---- CPU + RAM side by side ---------------------------------
+          Row {
             width: parent.width
             spacing: Style.space(8)
 
-            ResourceHeader {
+            ResourceCard {
               icon: "󰍛"
-              label: "CPU"
+              title: "CPU"
               value: root.cpuPercent + "%"
-            }
-
-            Meter {
               pct: root.cpuPercent
+              sub: root.cpuSub
+              width: (parent.width - Style.space(8)) / 2
             }
 
-            StatRow {
-              label: "TEMP"
-              value: root.tempLabel
-            }
-
-            StatRow {
-              label: "LOAD"
-              value: root.loadLabel
-            }
-          }
-
-          // ---- RAM ------------------------------------------------------
-          PanelSeparator {
-            foreground: root.contentForeground
-          }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(8)
-
-            ResourceHeader {
+            ResourceCard {
               icon: ""
-              label: "RAM"
+              title: "RAM"
               value: root.ramPercent + "%"
-            }
-
-            Meter {
               pct: root.ramPercent
-            }
-
-            StatRow {
-              label: "USED"
-              value: Model.fmtMemory(Model.value(root.stats, "ram", "used_kb", 0))
-            }
-
-            StatRow {
-              label: "AVAILABLE"
-              value: Model.fmtMemory(Model.value(root.stats, "ram", "available_kb", 0))
-            }
-
-            StatRow {
-              label: "TOTAL"
-              value: Model.fmtMemory(Model.value(root.stats, "ram", "total_kb", 0))
-            }
-
-            StatRow {
-              visible: root.hasSwap
-              label: "SWAP"
-              value: Model.fmtMemory(Model.value(root.stats, "swap", "used_kb", 0))
+              sub: root.ramSub
+              sub2: root.swapSub
+              width: (parent.width - Style.space(8)) / 2
             }
           }
 
           // ---- Top memory consumers -------------------------------------
           Column {
-            visible: root.topApps.length > 0 || root.others !== null
+            visible: root.memCells.length > 0
             width: parent.width
             spacing: Style.space(8)
 
@@ -194,70 +155,47 @@ Panel {
               value: root.usedLabel
             }
 
-            Column {
+            // Two-column grid: top 5 plus Others fills 3 complete rows.
+            Grid {
+              id: appGrid
               width: parent.width
-              spacing: Style.spacing.labelGap
+              columns: 2
+              rowSpacing: Style.spacing.labelGap
+              columnSpacing: Style.space(20)
+
+              readonly property real cellWidth: (width - columnSpacing * (columns - 1)) / columns
 
               Repeater {
-                model: root.topApps
+                model: root.memCells
 
-                // Two-column rows, same look as the network panel's info grid:
-                // dimmed label on the left, right-aligned value on the right,
-                // bodySmall text, labelGap row spacing, Space(20) column gap.
+                // Compact two-column rows, same look as the network panel's
+                // info grid: dimmed label left, right-aligned value right.
                 Item {
                   required property var modelData
 
                   readonly property string appName: String(modelData.name || "")
                   readonly property string memLabel: String(modelData.label || "")
 
-                  width: parent.width
-                  implicitHeight: Math.max(appNameText.implicitHeight, appMemText.implicitHeight)
+                  width: appGrid.cellWidth
+                  implicitHeight: Math.max(cellNameText.implicitHeight, cellMemText.implicitHeight)
 
                   InfoLabel {
-                    id: appNameText
+                    id: cellNameText
                     text: appName
                     elide: Text.ElideRight
                     anchors.left: parent.left
-                    anchors.right: appMemText.left
-                    anchors.rightMargin: Style.space(20)
+                    anchors.right: cellMemText.left
+                    anchors.rightMargin: Style.space(12)
                     anchors.verticalCenter: parent.verticalCenter
                   }
 
                   InfoValue {
-                    id: appMemText
+                    id: cellMemText
                     text: memLabel
                     horizontalAlignment: Text.AlignRight
-                    elide: Text.ElideRight
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                   }
-                }
-              }
-
-              // Remainder row: everything outside the top 5 plus kernel-side
-              // usage, so the rows sum to the header (system used) exactly.
-              Item {
-                visible: root.others !== null
-                width: parent.width
-                implicitHeight: Math.max(othersNameText.implicitHeight, othersMemText.implicitHeight)
-
-                InfoLabel {
-                  id: othersNameText
-                  text: root.others ? root.others.name : ""
-                  elide: Text.ElideRight
-                  anchors.left: parent.left
-                  anchors.right: othersMemText.left
-                  anchors.rightMargin: Style.space(20)
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-
-                InfoValue {
-                  id: othersMemText
-                  text: root.others ? root.others.label : ""
-                  horizontalAlignment: Text.AlignRight
-                  elide: Text.ElideRight
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
                 }
               }
             }
@@ -286,48 +224,80 @@ Panel {
     }
   }
 
-  // Resource header: resource glyph + name with a right-aligned percentage,
-  // sized like the old hero (display icon, title text).
-  component ResourceHeader: Item {
+  // Resource card: glyph + name with a right-aligned percentage, a meter,
+  // then one or two dim sub-lines ("66°C · 1.8 1.4 1.3"). Two cards sit
+  // side by side in the overview row.
+  component ResourceCard: Column {
     required property string icon
-    required property string label
+    required property string title
     required property string value
+    required property int pct
+    required property string sub
+    property string sub2: ""
 
-    width: parent.width
-    implicitHeight: Math.max(resIcon.implicitHeight, resLabel.implicitHeight)
+    spacing: Style.space(6)
 
-    Text {
-      id: resIcon
-      text: icon
-      color: root.contentForeground
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.display
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(cardIcon.implicitHeight, cardTitle.implicitHeight)
+
+      Text {
+        id: cardIcon
+        text: icon
+        color: root.contentForeground
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.title
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: cardTitle
+        text: title
+        color: root.contentForeground
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        anchors.left: cardIcon.right
+        anchors.leftMargin: Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
+        elide: Text.ElideRight
+      }
+
+      Text {
+        id: cardValue
+        text: value
+        color: root.contentForeground
+        font.family: root.contentFontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        elide: Text.ElideRight
+      }
+    }
+
+    Meter {
+      pct: parent.pct
     }
 
     Text {
-      id: resLabel
-      text: label
-      color: root.contentForeground
+      width: parent.width
+      visible: parent.sub !== ""
+      text: parent.sub
+      color: Qt.darker(root.contentForeground, 1.5)
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.title
-      font.bold: true
-      anchors.left: resIcon.right
-      anchors.leftMargin: Style.space(14)
-      anchors.verticalCenter: parent.verticalCenter
+      font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
     }
 
     Text {
-      id: resValue
-      text: value
-      color: root.contentForeground
+      width: parent.width
+      visible: parent.sub2 !== ""
+      text: parent.sub2
+      color: Qt.darker(root.contentForeground, 1.5)
       font.family: root.contentFontFamily
-      font.pixelSize: Style.font.title
-      font.bold: true
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
+      font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
     }
   }
@@ -361,38 +331,6 @@ Panel {
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       elide: Text.ElideRight
-    }
-  }
-
-  // Stat row: dim label on the left, live value on the right.
-  component StatRow: Item {
-    required property string label
-    required property string value
-
-    width: parent.width
-    implicitHeight: Math.max(rowLabel.implicitHeight, rowValue.implicitHeight)
-
-    Text {
-      id: rowLabel
-      text: label
-      color: Qt.darker(root.contentForeground, 1.5)
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.body
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    Text {
-      id: rowValue
-      text: value
-      color: root.contentForeground
-      font.family: root.contentFontFamily
-      font.pixelSize: Style.font.body
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      elide: Text.ElideRight
-      width: parent.width * 0.62
-      horizontalAlignment: Text.AlignRight
     }
   }
 

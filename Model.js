@@ -82,6 +82,29 @@ function topAppsTotal(stats) {
   return fmtMemory(total)
 }
 
+// One-line card subtitles, skipping fields with no data: "56°C · 2.1 · 1.3 · 1.0".
+function cpuSub(stats) {
+  var parts = []
+  var t = cpuTemp(stats)
+  if (t) parts.push(t)
+  var load = loadLabel(stats)
+  if (load) parts.push(load)
+  return parts.join(" \u00b7 ")
+}
+
+// "5.5 GB / 15.0 GB": used over total for the RAM card subtitle.
+function ramSub(stats) {
+  return fmtMemory(value(stats, "ram", "used_kb", 0))
+    + " / " + fmtMemory(value(stats, "ram", "total_kb", 0))
+}
+
+// "SWAP 0 B / 30.0 GB", or empty when the machine has no swap.
+function swapSub(stats) {
+  if (value(stats, "swap", "total_kb", 0) <= 0) return ""
+  return "SWAP " + fmtMemory(value(stats, "swap", "used_kb", 0))
+    + " / " + fmtMemory(value(stats, "swap", "total_kb", 0))
+}
+
 // Remainder row so Top5 + Others == system used: { name, label } where name
 // is "Others (N processes)". Null when the payload predates the field.
 function others(stats) {
