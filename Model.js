@@ -82,6 +82,19 @@ function topAppsTotal(stats) {
   return fmtMemory(total)
 }
 
+// Remainder row so Top5 + Others == system used: { name, label } where name
+// is "Others (N processes)". Null when the payload predates the field.
+function others(stats) {
+  var o = stats && stats.others
+  if (!o) return null
+  var n = Math.max(0, Math.round(Number(o.count) || 0))
+  var noun = n === 1 ? "process" : "processes"
+  return {
+    name: "Others (" + n + " " + noun + ")",
+    label: fmtMemory(Number(o.rss_kb) || 0)
+  }
+}
+
 // Number field from a payload section, e.g. value(stats, "ram", "used_kb", 0).
 function value(stats, key, field, fallback) {
   var o = stats && stats[key]

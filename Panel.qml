@@ -28,7 +28,9 @@ Panel {
   readonly property int ramPercent: Model.pctFor(root.stats, "ram")
   readonly property bool hasSwap: Model.value(root.stats, "swap", "total_kb", 0) > 0
   readonly property var topApps: Model.topApps(root.stats)
-  readonly property string topAppsTotalLabel: Model.topAppsTotal(root.stats)
+  readonly property var others: Model.others(root.stats)
+  // Header ties to system used so Top5 + Others sums to it exactly.
+  readonly property string usedLabel: Model.fmtMemory(Model.value(root.stats, "ram", "used_kb", 0))
   readonly property string loadLabel: Model.loadLabel(root.stats)
   readonly property string tempLabel: Model.cpuTemp(root.stats)
 
@@ -178,7 +180,7 @@ Panel {
 
           // ---- Top memory consumers -------------------------------------
           Column {
-            visible: root.topApps.length > 0
+            visible: root.topApps.length > 0 || root.others !== null
             width: parent.width
             spacing: Style.space(8)
 
@@ -189,7 +191,7 @@ Panel {
 
             SectionHeader {
               label: "TOP MEMORY"
-              value: root.topAppsTotalLabel
+              value: root.usedLabel
             }
 
             Column {
@@ -229,6 +231,33 @@ Panel {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                   }
+                }
+              }
+
+              // Remainder row: everything outside the top 5 plus kernel-side
+              // usage, so the rows sum to the header (system used) exactly.
+              Item {
+                visible: root.others !== null
+                width: parent.width
+                implicitHeight: Math.max(othersNameText.implicitHeight, othersMemText.implicitHeight)
+
+                InfoLabel {
+                  id: othersNameText
+                  text: root.others ? root.others.name : ""
+                  elide: Text.ElideRight
+                  anchors.left: parent.left
+                  anchors.right: othersMemText.left
+                  anchors.rightMargin: Style.space(20)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                InfoValue {
+                  id: othersMemText
+                  text: root.others ? root.others.label : ""
+                  horizontalAlignment: Text.AlignRight
+                  elide: Text.ElideRight
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
                 }
               }
             }

@@ -124,17 +124,19 @@ BROWSER_SUBPROCESS_COMMS = {
     "Crashpad Handler", "Chrome_ChildThread", "spellcheck", "tab", "mime",
 }
 
-def top_apps(limit=5):
+def top_apps(ram_used_kb, limit=5):
     # Read /proc directly: ps -o comm= columns are space-padded, so the
     # multi-word worker names ("Web Content", "Socket Process", ...) split on
     # whitespace and each fragment masquerades as a separate app. Reading the
-    # raw stat comm (kernel-truncated to 15 chars) and stat field 24 (RSS in
-    # pages) keeps both the name and the footprint intact.
+    # raw stat comm (kernel-truncated to 15 chars) keeps the name intact.
+    # Footprint is PSS from smaps_rollup (shared pages split proportionally,
+    # so per-app rows sum without double-counting), falling back to stat
+    # field 24 (RSS in pages) when rollup is unreadable (other users' procs).
     procs = {}
     try:
         pids = [int(p) for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
-        return []
+        return [], {"rss_kb": max(0, ram_used_kb), "count": 0}
     pagesize = os.sysconf("SC_PAGESIZE") or 4096
     for pid in pids:
         try:
@@ -148,12 +150,21 @@ def top_apps(limit=5):
             continue
         if rss <= 0:
             continue
-        procs[pid] = (ppid, comm, rss)
+        try:
+            with open(f"/proc/{pid}/smaps_rollup") as fh:
+                pss = None
+                for line in fh:
+                    if line.startswith("Pss:"):
+                        pss = int(line.split()[1])
+                        break
+        except (ValueError, IndexError, OSError):
+            pss = None
+        procs[pid] = (ppid, comm, pss if pss is not None else rss)
 
     # Fold workers into their main process: walk the parent chain while the
     # current process is an internal browser worker. The walk stops at the
-    # browser binary (e.g. "zen-bin"), so every worker's RSS lands on the
-    # same row as the browser that spawned it.
+    # browser binary (e.g. "zen-bin"), so every worker's footprint lands on
+    # the same row as the browser that spawned it.
     def root_for(pid):
         ppid, comm, _ = procs[pid]
         seen = set()
@@ -163,11 +174,26 @@ def top_apps(limit=5):
         return comm
 
     agg = {}
-    for pid, (ppid, comm, rss) in procs.items():
+    for pid, (ppid, comm, kb) in procs.items():
         name = root_for(pid) if comm in BROWSER_SUBPROCESS_COMMS else comm
-        agg[name] = agg.get(name, 0) + rss
-    items = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    return [{"name": name, "rss_kb": rss} for name, rss in items]
+        entry = agg.get(name)
+        if entry is None:
+            agg[name] = [kb, 1]
+        else:
+            entry[0] += kb
+            entry[1] += 1
+    ranked = sorted(agg.items(), key=lambda kv: kv[1][0], reverse=True)
+    top = ranked[:limit]
+    top_kb = sum(kb for _, (kb, _) in top)
+    top_pids = sum(n for _, (_, n) in top)
+    # Remainder row so Top5 + Others == system used exactly: Others absorbs
+    # every other process plus kernel-side usage (slab, page tables) that no
+    # per-process counter attributes.
+    others = {
+        "rss_kb": max(0, ram_used_kb - top_kb),
+        "count": max(0, len(procs) - top_pids),
+    }
+    return ([{"name": name, "rss_kb": kb} for name, (kb, _) in top], others)
 
 cpu_percent = max(0, min(100, kb("AGX_CPU_PERCENT")))
 ram_used, ram_avail, ram_total = kb("AGX_RAM_USED_KB"), kb("AGX_RAM_AVAIL_KB"), kb("AGX_RAM_TOTAL_KB")
@@ -193,7 +219,7 @@ cpu = {
         float(os.environ.get("AGX_LOAD15", 0)),
     ],
 }
-apps = top_apps()
+apps, others = top_apps(ram_used)
 
 def fmt_load():
     return " ".join(f"{x:.1f}" for x in cpu["load"])
@@ -205,10 +231,12 @@ tooltip += f"\nLoad: {fmt_load()}"
 tooltip += f"\n\nMemory: {ram['percent']}%\nUsed: {fmt(ram_used)} / {fmt(ram_total)}\nAvailable: {fmt(ram_avail)}"
 if swap_total > 0:
     tooltip += f"\nSwap: {fmt(swap_used)} / {fmt(swap_total)}"
-if apps:
+if apps or others["count"] > 0:
     tooltip += "\n\nTop memory:"
     for app in apps:
         tooltip += f"\n{app['name']} {fmt(app['rss_kb'])}"
+    noun = "process" if others["count"] == 1 else "processes"
+    tooltip += f"\nOthers ({others['count']} {noun}) {fmt(others['rss_kb'])}"
 
 payload = {
     "text": f"󰍛 {cpu_percent}%   {gb(ram_used):.1f}GB",
@@ -217,6 +245,7 @@ payload = {
     "ram": ram,
     "swap": swap,
     "topapps": apps,
+    "others": others,
 }
 print(json.dumps(payload))
 PY
